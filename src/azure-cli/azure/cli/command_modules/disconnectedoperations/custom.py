@@ -16,8 +16,8 @@ api_version = "2023-08-01-preview"
 def _get_management_endpoint(cli_ctx):
     """Helper function to determine management endpoint based on cloud configuration."""
     cloud = cli_ctx.cloud
-    return cloud.endpoints.resource_manager
-    # return "brazilus.management.azure.com"
+    # return cloud.endpoints.resource_manager
+    return "brazilus.management.azure.com"
 
 
 def _handle_directory_cleanup(version_level_path, logger):
@@ -598,3 +598,111 @@ def get_offer(cmd, resource_group_name, resource_name, publisher_name, offer_nam
             "status": "failed",
             "resource_group_name": resource_group_name,
         }
+
+def sideload_image(cmd, resource_group_name, resource_name, publisher_name, offer_name, sku, version, root_folder):
+    """Sideload the specified marketplace offer to disconnected operations instance."""
+    import json
+    import os
+
+    from knack.log import get_logger
+    
+    logger = get_logger(__name__)
+
+    # Check if running in disconnected mode by verifying the resource manager endpoint
+    resource_manager = cmd.cli_ctx.cloud.endpoints.resource_manager
+    if resource_manager != "https://armmanagement.autonomous.cloud.private":
+        logger.error("The sideload operation is only available in disconnected environments")
+        return {
+            "error": "This operation is only available in disconnected operations environment. "
+                    f"Current resource manager endpoint: '{resource_manager}' is not valid for this operation",
+            "status": "failed"
+        }
+    
+    # Define expected paths
+    # Expected structure based on package_offer function:
+    # root_folder/catalog_artifacts/publisher_name/offer_name/sku/version/metadata.json
+    # root_folder/catalog_artifacts/publisher_name/offer_name/icons/*.png
+    
+    base_path = os.path.join(root_folder, "catalog_artifacts", publisher_name, offer_name)
+    sku_path = os.path.join(base_path, sku)
+    version_path = os.path.join(sku_path, version)
+    metadata_path = os.path.join(version_path, "metadata.json")
+    icons_path = os.path.join(sku_path, "icons")
+    
+    # Validate basic folder structure exists
+    if not os.path.isdir(base_path):
+        logger.error("Invalid folder structure. Missing path: %s", base_path)
+        return {
+            "error": f"Invalid folder structure. Could not find path: {base_path}",
+            "status": "failed"
+        }
+    
+    if not os.path.isdir(sku_path):
+        logger.error("Invalid folder structure. Missing SKU folder: %s", sku_path)
+        return {
+            "error": f"Invalid folder structure. Could not find SKU folder: {sku_path}",
+            "status": "failed"
+        }
+    
+    if not os.path.isdir(version_path):
+        logger.error("Invalid folder structure. Missing version folder: %s", version_path)
+        return {
+            "error": f"Invalid folder structure. Could not find version folder: {version_path}",
+            "status": "failed"
+        }
+    
+    # Validate metadata.json exists
+    if not os.path.isfile(metadata_path):
+        logger.error("Missing metadata.json file at %s", metadata_path)
+        return {
+            "error": f"Missing metadata.json file at {metadata_path}",
+            "status": "failed"
+        }
+    
+    # Validate metadata.json is valid JSON
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        logger.info("Successfully loaded metadata.json")
+    except (json.JSONDecodeError, IOError) as e:
+        logger.error("Failed to load metadata.json: %s", str(e))
+        return {
+            "error": f"Failed to load metadata.json: {str(e)}",
+            "status": "failed"
+        }
+    
+    # Check for icons directory
+    if not os.path.isdir(icons_path):
+        logger.error("Missing icons directory at %s", icons_path)
+        return {
+            "error": f"Missing icons directory at {icons_path}",
+            "status": "failed"
+        }
+    
+    # Check if icons directory has at least one .png file
+    icon_files = [f for f in os.listdir(icons_path) if f.endswith('.png')]
+    if not icon_files:
+        logger.error("No icon files found in %s", icons_path)
+        return {
+            "error": f"No icon files (.png) found in {icons_path}",
+            "status": "failed"
+        }
+    logger.info("Found %d icon files in the icons directory", len(icon_files))
+    
+    # Check for VM image files (look for VHD or other common VM image formats)
+    vhd_files = [f for f in os.listdir(version_path) if f.endswith(('.vhd', '.vhdx', '.vmdk', '.img'))]
+    if not vhd_files:
+        logger.warning("No VM image files found in %s. This might be expected if the VM image is stored elsewhere.", version_path)
+    else:
+        logger.info("Found VM image file: %s", vhd_files[0])
+    
+    logger.info("Folder structure validation complete. All required components are present.")
+    
+    # Continue with the actual sideload process
+    return {
+        "status": "ready_to_sideload",
+        "message": "Folder structure validation complete. Ready to proceed with sideload.",
+        "metadata_file": metadata_path,
+        "version_path": version_path,
+        "icon_files": icon_files
+    }

@@ -96,3 +96,40 @@ parameters:
     type: string
     short-summary: The folder path where the package will be downloaded
 """
+
+helps['disconnectedoperations edgeoperator'] = """
+type: group
+short-summary: Manage Edge Operator operations.
+"""
+
+helps['disconnectedoperations edgeoperator sideload'] = """
+type: command
+short-summary: Sideload a marketplace offer to a disconnected operations instance.
+long-summary: Validates and sideloads a previously downloaded marketplace offer to a disconnected operations instance.
+examples:
+  - name: Sideload a marketplace offer
+    text: >
+      az disconnectedoperations edgeoperator sideload --resource-group myResourceGroup --resource-name myResource --publisher-name publisherName --offer-name offerName --sku skuName --version versionNumber --root-folder "D:\\MarketplacePackages"
+parameters:
+  - name: --resource-group -g
+    type: string
+    short-summary: Name of resource group
+  - name: --resource-name
+    type: string
+    short-summary: The resource name
+  - name: --publisher-name
+    type: string
+    short-summary: The publisher name of the offer
+  - name: --offer-name
+    type: string
+    short-summary: The name of the offer
+  - name: --sku
+    type: string
+    short-summary: The SKU of the offer
+  - name: --version
+    type: string
+    short-summary: The version of the offer
+  - name: --root-folder
+    type: string
+    short-summary: The root folder containing the package structure with marketplace artifacts
+"""

@@ -41,3 +41,12 @@ def load_arguments(self, _):
             type=str,
             help="Drive and directory to save the package to. Example: E:\\ or D:\\packages\\",
         )
+    
+    with self.argument_context('disconnectedoperations edgeoperator sideload') as c:
+        c.argument('resource_group_name', arg_type=resource_group_name_type)
+        c.argument('resource_name', help='The resource name')
+        c.argument('publisher_name', help='The publisher name of the offer')
+        c.argument('offer_name', help='The name of the offer')
+        c.argument('sku', help='The SKU of the offer')
+        c.argument('version', help='The version of the offer')
+        c.argument('root_folder', help='The root folder containing the package structure with marketplace artifacts. Example: E:\\ or D:\\packages\\')

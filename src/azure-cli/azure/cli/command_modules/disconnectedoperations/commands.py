@@ -91,4 +91,11 @@ def load_command_table(self, _):
         )
         g.custom_command("packageoffer", "package_offer")
 
+    with self.command_group(
+        "disconnectedoperations edgeoperator",
+        custom_command_type=custom_command_type,
+        is_preview=True,
+    ) as g:
+        g.custom_command("sideload", "sideload_image")
+    
     return self.command_table
