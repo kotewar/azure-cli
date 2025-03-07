@@ -8,7 +8,7 @@
 # pylint: disable=too-many-lines
 # pylint: disable=too-many-statements
 
-provider_namespace = "Microsoft.DataBoxEdge"
+provider_namespace = "Microsoft.Edge"
 sub_provider = "Microsoft.EdgeMarketPlace"
 api_version = "2023-08-01-preview"
 
@@ -16,9 +16,7 @@ api_version = "2023-08-01-preview"
 def _get_management_endpoint(cli_ctx):
     """Helper function to determine management endpoint based on cloud configuration."""
     cloud = cli_ctx.cloud
-    # return cloud.endpoints.resource_manager
-    return "brazilus.management.azure.com"
-
+    return cloud.endpoints.resource_manager
 
 def _handle_directory_cleanup(version_level_path, logger):
     """Helper function to clean up existing directory."""
@@ -127,6 +125,9 @@ def package_offer(cmd, resource_group_name, resource_name, publisher_name,
                   offer_name, sku, version, output_folder):
     """Get details of a specific marketplace offer and download its logos."""
 
+    import os
+    import zipfile
+
     import requests
     from knack.log import get_logger
 
@@ -142,7 +143,7 @@ def package_offer(cmd, resource_group_name, resource_name, publisher_name,
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/dataBoxEdgeDevices/{resource_name}"
+        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/{sub_provider}/offers/{publisher_name}:{offer_name}"
         f"?api-version={api_version}"
     )
@@ -181,6 +182,17 @@ def package_offer(cmd, resource_group_name, resource_name, publisher_name,
                 output_folder, publisher_id, offer_id, sku, version_id, data, logger
             )
 
+            # Check if package already exists
+            if os.path.exists(version_level_path) and os.path.exists(os.path.join(version_level_path, "metadata.json")):
+                logger.warning("Package for %s:%s SKU %s version %s already exists at %s", 
+                              publisher_name, offer_name, sku, version, version_level_path)
+                return {
+                    "warning": "Package already exists, in case you want to re-download the package, please delete the existing package folder and try again.",
+                    "status": "skipped",
+                    "resource_group_name": resource_group_name,
+                    "path": version_level_path
+                }
+            
             if result:  # Error occurred
                 return result
 
@@ -190,6 +202,49 @@ def package_offer(cmd, resource_group_name, resource_name, publisher_name,
 
             print("Metadata and icons downloaded successfully")
             print("Offer details retrieved successfully. Proceeding to download VHD.")
+
+            # Also download windows azcopy in the root folder to use in the sideloading step
+            azcopy_url = "https://aka.ms/downloadazcopy-v10-windows"
+            azcopy_path = os.path.join(output_folder, "azcopy.zip") 
+
+            if not os.path.exists(azcopy_path):
+                logger.info("Downloading AzCopy tool to %s to use later in the winfield environment", azcopy_path)
+                with open(azcopy_path, "wb") as f:
+                    f.write(requests.get(azcopy_url).content)
+                logger.info("AzCopy tool downloaded successfully")
+
+            # Extract the azcopy exe from the zip
+            with zipfile.ZipFile(azcopy_path, 'r') as zip_ref:
+                zip_ref.extractall(output_folder)
+                
+            # Find and rename the extracted folder to "azcopy"
+            for item in os.listdir(output_folder):
+                item_path = os.path.join(output_folder, item)
+                if os.path.isdir(item_path) and item.startswith("azcopy"):
+                    azcopy_dir = os.path.join(output_folder, "azcopy")
+                    # Skip if the directory is already named exactly "azcopy"
+                    if item_path == azcopy_dir:
+                        logger.info("AzCopy directory already has correct name: 'azcopy'")
+                        continue
+                        
+                    # Remove existing azcopy directory if it exists
+                    if os.path.exists(azcopy_dir):
+                        import shutil
+                        shutil.rmtree(azcopy_dir)
+                        
+                    # Rename folder to azcopy
+                    try:
+                        os.rename(item_path, azcopy_dir)
+                        logger.info("Renamed AzCopy directory to 'azcopy'")
+                    except FileNotFoundError as e:
+                        logger.warning("Could not rename AzCopy directory: %s", str(e))
+                    break
+            # Delete the zip file after successful extraction
+            if os.path.exists(azcopy_path):
+                os.remove(azcopy_path)
+                logger.info("Deleted AzCopy zip file after extraction")
+
+            logger.info("AzCopy tool extracted successfully")
 
             # Downloading VM image
             return download_vhd(
@@ -287,7 +342,7 @@ def _get_token_url(management_endpoint, subscription_id, resource_group_name,
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/dataBoxEdgeDevices/{resource_name}"
+        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/Microsoft.EdgeMarketPlace/offers/{publisher_name}:{offer_name}"
         f"/getAccessToken?api-version={api_version}"
     )
@@ -406,7 +461,7 @@ def download_vhd(cmd, resource_group_name, resource_name, publisher_name,
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/dataBoxEdgeDevices/{resource_name}"
+        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/Microsoft.EdgeMarketPlace/offers/{publisher_name}:{offer_name}"
         f"/generateAccessToken?api-version=2023-08-01-preview"
     )
@@ -483,7 +538,7 @@ def list_offers(cmd, resource_group_name, resource_name):
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/dataBoxEdgeDevices/{resource_name}"
+        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/{sub_provider}/offers"
         f"?api-version={api_version}"
     )
@@ -547,7 +602,7 @@ def get_offer(cmd, resource_group_name, resource_name, publisher_name, offer_nam
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/dataBoxEdgeDevices/{resource_name}"
+        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/{sub_provider}/offers/{publisher_name}:{offer_name}"
         f"?api-version={api_version}"
     )
@@ -663,6 +718,7 @@ def sideload_image(cmd, resource_group_name, resource_name, publisher_name, offe
     try:
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
+
         logger.info("Successfully loaded metadata.json")
     except (json.JSONDecodeError, IOError) as e:
         logger.error("Failed to load metadata.json: %s", str(e))
