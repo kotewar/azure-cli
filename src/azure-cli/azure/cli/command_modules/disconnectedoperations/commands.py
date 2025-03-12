@@ -71,7 +71,7 @@ def load_command_table(self, _):
 
     # Register the parent command group
     with self.command_group(
-        "disconnectedoperations",
+        "edge disconnected-operation",
         custom_command_type=custom_command_type,
         is_preview=True,
     ) as g:
@@ -79,17 +79,17 @@ def load_command_table(self, _):
 
     # Register the subgroup and its commands
     with self.command_group(
-        "disconnectedoperations edgemarketplace",
+        "edge disconnected-operation edge-marketplace",
         custom_command_type=custom_command_type,
         is_preview=True,
     ) as g:
         g.custom_command(
-            "listoffers", "list_offers", table_transformer=transform_offers_table
+            "offer list", "list_offers", table_transformer=transform_offers_table
         )
         g.custom_command(
-            "getoffer", "get_offer", table_transformer=transform_offer_table
+            "offer get", "get_offer", table_transformer=transform_offer_table
         )
-        g.custom_command("packageoffer", "package_offer")
+        g.custom_command("offer package", "package_offer")
 
     with self.command_group(
         "disconnectedoperations edgeoperator",
