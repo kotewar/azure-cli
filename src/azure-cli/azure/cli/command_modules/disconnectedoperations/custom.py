@@ -8,10 +8,12 @@
 # pylint: disable=too-many-lines
 # pylint: disable=too-many-statements
 
-provider_namespace = "Microsoft.Edge"
-sub_provider = "Microsoft.EdgeMarketPlace"
-api_version = "2023-08-01-preview"
+public_provider_namespace = "Microsoft.Edge"
+public_sub_provider = "Microsoft.EdgeMarketPlace"
+public_api_version = "2023-08-01-preview"
 
+disconnected_operations_provider_namespace = "Microsoft.EdgeOperator"
+disconnected_operations_api_version = "2025-02-01-preview"
 
 def _get_management_endpoint(cli_ctx):
     """Helper function to determine management endpoint based on cloud configuration."""
@@ -143,9 +145,9 @@ def package_offer(cmd, resource_group_name, resource_name, publisher_name,
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
-        f"/providers/{sub_provider}/offers/{publisher_name}:{offer_name}"
-        f"?api-version={api_version}"
+        f"/providers/{public_provider_namespace}/disconnectedOperations/{resource_name}"
+        f"/providers/{public_sub_provider}/offers/{publisher_name}:{offer_name}"
+        f"?api-version={public_api_version}"
     )
 
     try:
@@ -342,9 +344,9 @@ def _get_token_url(management_endpoint, subscription_id, resource_group_name,
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
+        f"/providers/{public_provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/Microsoft.EdgeMarketPlace/offers/{publisher_name}:{offer_name}"
-        f"/getAccessToken?api-version={api_version}"
+        f"/getAccessToken?api-version={public_api_version}"
     )
 
 
@@ -461,7 +463,7 @@ def download_vhd(cmd, resource_group_name, resource_name, publisher_name,
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
+        f"/providers/{public_provider_namespace}/disconnectedOperations/{resource_name}"
         f"/providers/Microsoft.EdgeMarketPlace/offers/{publisher_name}:{offer_name}"
         f"/generateAccessToken?api-version=2023-08-01-preview"
     )
@@ -538,9 +540,9 @@ def list_offers(cmd, resource_group_name, resource_name):
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
-        f"/providers/{sub_provider}/offers"
-        f"?api-version={api_version}"
+        f"/providers/{public_provider_namespace}/disconnectedOperations/{resource_name}"
+        f"/providers/{public_sub_provider}/offers"
+        f"?api-version={public_api_version}"
     )
 
     try:
@@ -602,9 +604,9 @@ def get_offer(cmd, resource_group_name, resource_name, publisher_name, offer_nam
         f"https://{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/resourceGroups/{resource_group_name}"
-        f"/providers/{provider_namespace}/disconnectedOperations/{resource_name}"
-        f"/providers/{sub_provider}/offers/{publisher_name}:{offer_name}"
-        f"?api-version={api_version}"
+        f"/providers/{public_provider_namespace}/disconnectedOperations/{resource_name}"
+        f"/providers/{public_sub_provider}/offers/{publisher_name}:{offer_name}"
+        f"?api-version={public_api_version}"
     )
 
     try:
@@ -654,11 +656,12 @@ def get_offer(cmd, resource_group_name, resource_name, publisher_name, offer_nam
             "resource_group_name": resource_group_name,
         }
 
-def sideload_image(cmd, resource_group_name, resource_name, publisher_name, offer_name, sku, version, root_folder):
+def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
     """Sideload the specified marketplace offer to disconnected operations instance."""
     import json
     import os
 
+    import requests
     from knack.log import get_logger
     
     logger = get_logger(__name__)
@@ -755,10 +758,198 @@ def sideload_image(cmd, resource_group_name, resource_name, publisher_name, offe
     logger.info("Folder structure validation complete. All required components are present.")
     
     # Continue with the actual sideload process
-    return {
-        "status": "ready_to_sideload",
-        "message": "Folder structure validation complete. Ready to proceed with sideload.",
-        "metadata_file": metadata_path,
-        "version_path": version_path,
-        "icon_files": icon_files
+
+    # Provision storage account and container for the icon upload
+
+    response = provision_icon_storage(cmd, publisher_name, offer_name, sku)
+
+    if( response["status"] != "succeeded"):
+        logger.error("Failed to provision storage for icon upload: %s", response.get("error", "Unknown error"))
+        return {
+            "error": response.get("error", "Unknown error"),
+            "status": "failed"
+        }
+    
+    logger.info("Storage provisioned successfully. Proceeding to upload icons.")
+
+    icon_url = generate_icon_sas_token(
+        cmd, publisher_name, offer_name, sku)
+    sas_url = icon_url["sasUrl"]
+
+    # Upload icons to the generated SAS URL
+    for icon_file in icon_files:
+        icon_path = os.path.join(icons_path, icon_file)
+        with open(icon_path, 'rb') as f:
+            icon_data = f.read()
+
+        # Upload the icon file to the SAS URL
+        upload_response = requests.put(sas_url, data=icon_data)
+
+        if upload_response.status_code == 201:
+            logger.info("Successfully uploaded %s to %s", icon_file, sas_url)
+        else:
+            logger.error("Failed to upload %s: %s", icon_file, upload_response.status_code)
+    
+
+def provision_icon_storage(cmd,publisher_name, offer_name, sku):
+    """Generate SAS token URL for uploading icons to a marketplace offer.
+    
+    Args:
+        cmd: The command object.
+        publisher_name: Publisher ID of the marketplace offer.
+        offer_name: Offer ID of the marketplace offer.
+        sku: SKU ID of the marketplace offer.
+        
+    Returns:
+        Dictionary containing the SAS URL for icon upload or error details.
+    """
+    import json
+
+    import requests
+    from knack.log import get_logger
+
+    from azure.cli.core.commands.client_factory import get_subscription_id
+    from azure.cli.core.util import send_raw_request
+
+    logger = get_logger(__name__)
+    management_endpoint = _get_management_endpoint(cmd.cli_ctx)
+    subscription_id = get_subscription_id(cmd.cli_ctx)
+
+    # Construct URL for requesting the SAS token
+    url = (
+        f"https://{management_endpoint}"
+        f"/subscriptions/{subscription_id}"
+        f"/providers/{disconnected_operations_provider_namespace}/edgemarketplaceoffers"
+        f"/{publisher_name}:{offer_name}:{sku}"
+        f"?api-version={public_api_version}"
+    )
+
+    # Request body
+    body = {
     }
+
+    try:
+        logger.info("Provisioning storage for icon upload")
+        response = send_raw_request(
+            cmd.cli_ctx, "put", url,
+            resource=management_endpoint,
+            body=json.dumps(body)
+        )
+
+        if response.status_code == 200:
+            token_data = response.json()
+            
+            provisioning_state = token_data.get("properties", {}).get("provisioningState")
+            if provisioning_state != "Succeeded":
+                logger.error("Provisioning state is not succeeded: %s", provisioning_state)
+                return {
+                    "error": f"Provisioning state is not succeeded: {provisioning_state}",
+                    "status": "failed"
+                }
+            
+            logger.info("Successfully generated SAS URL for icons")
+            return {
+                "status": "succeeded",
+            }
+        
+        if response.status_code == 409:
+            logger.info("Storage already provisioned")
+            return {
+                "status": "succeeded",
+                "message": "Storage already provisioned"
+            }
+        
+        error_message = f"Request failed with status code: {response.status_code}"
+        logger.error(error_message)
+        return {
+            "error": error_message,
+            "status": "failed",
+            "response": response.text,
+        }
+
+    except requests.RequestException as e:
+        logger.error("Failed to generate icon SAS token: %s", str(e))
+        return {
+            "error": str(e),
+            "status": "failed"
+        }
+    
+
+def generate_icon_sas_token(cmd,publisher_name, offer_name, sku):
+    """Generate SAS token URL for uploading icons to a marketplace offer.
+    
+    Args:
+        cmd: The command object.
+        publisher_name: Publisher ID of the marketplace offer.
+        offer_name: Offer ID of the marketplace offer.
+        sku: SKU ID of the marketplace offer.
+        icon_name: Name of the icon file (e.g., "large", "medium", "small").
+        
+    Returns:
+        Dictionary containing the SAS URL for icon upload or error details.
+    """
+    import json
+
+    import requests
+    from knack.log import get_logger
+
+    from azure.cli.core.commands.client_factory import get_subscription_id
+    from azure.cli.core.util import send_raw_request
+
+    logger = get_logger(__name__)
+    management_endpoint = _get_management_endpoint(cmd.cli_ctx)
+    subscription_id = get_subscription_id(cmd.cli_ctx)
+
+    # Construct URL for requesting the SAS token
+    url = (
+        f"https://{management_endpoint}"
+        f"/subscriptions/{subscription_id}"
+        f"/providers/{disconnected_operations_provider_namespace}/edgemarketplaceoffers"
+        f"/{publisher_name}:{offer_name}:{sku}"
+        f"/postAccessToken"
+        f"?api-version={public_api_version}"
+    )
+
+    # Request body
+    body = {
+    }
+
+    try:
+        logger.info("Generating SAS token for icon upload")
+        response = send_raw_request(
+            cmd.cli_ctx, "post", url,
+            resource=management_endpoint,
+            body=json.dumps(body)
+        )
+
+        if response.status_code == 200:
+            token_data = response.json()
+            sas_url = token_data.get("sasUrl")
+            
+            if not sas_url:
+                logger.error("SAS URL not found in response")
+                return {
+                    "error": "SAS URL not found",
+                    "status": "failed"
+                }
+                
+            logger.info("Successfully generated SAS URL for icons")
+            return {
+                "status": "succeeded",
+                "sasUrl": sas_url
+            }
+        
+        error_message = f"Request failed with status code: {response.status_code}"
+        logger.error(error_message)
+        return {
+            "error": error_message,
+            "status": "failed",
+            "response": response.text,
+        }
+
+    except requests.RequestException as e:
+        logger.error("Failed to generate icon SAS token: %s", str(e))
+        return {
+            "error": str(e),
+            "status": "failed"
+        }
