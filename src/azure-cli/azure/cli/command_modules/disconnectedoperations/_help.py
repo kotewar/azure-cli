@@ -119,7 +119,7 @@ long-summary: Validates and sideloads a previously downloaded marketplace offer 
 examples:
   - name: Sideload a marketplace offer
     text: >
-      az edge disconnected-operation edge-operator sideload --publisher-name publisherName --offer-name offerName --sku skuName --version versionNumber --root-folder "D:\MarketplacePackages"
+      az edge disconnected-operation edge-operator sideload --publisher-name publisherName --offer-name offerName --sku skuName --version versionNumber --root-folder pathToRootFolder
 parameters:
   - name: --publisher-name
     type: string
@@ -135,5 +135,5 @@ parameters:
     short-summary: The version of the offer
   - name: --root-folder
     type: string
-    short-summary: The root folder containing the package structure with marketplace artifacts. Example: "D:\marketplacePackages\".
+    short-summary: The root folder containing the package structure with marketplace artifacts.
 """
