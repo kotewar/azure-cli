@@ -92,7 +92,7 @@ def load_command_table(self, _):
         g.custom_command("offer package", "package_offer")
 
     with self.command_group(
-        "disconnected-operation edge-operator",
+        "edge disconnected-operation edge-operator",
         custom_command_type=custom_command_type,
         is_preview=True,
     ) as g:
