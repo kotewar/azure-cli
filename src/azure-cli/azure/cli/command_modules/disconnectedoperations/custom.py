@@ -8,6 +8,8 @@
 # pylint: disable=too-many-lines
 # pylint: disable=too-many-statements
 
+from azure.cli.core.azclierror import HTTPError
+
 public_provider_namespace = "Microsoft.Edge"
 public_sub_provider = "Microsoft.EdgeMarketPlace"
 public_api_version = "2023-08-01-preview"
@@ -685,7 +687,7 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
     
     # Define expected paths
     # Expected structure based on package_offer function:
-    # root_folder/catalog_artifacts/publisher_name/offer_name/sku/version/metadata.json
+    # root_folder/catalog_artifacts/publisher_name/offer_name/sku/metadata.json
     # root_folder/catalog_artifacts/publisher_name/offer_name/icons/*.png
     
     base_path = os.path.join(root_folder, "catalog_artifacts", publisher_name, offer_name)
@@ -769,7 +771,7 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
     # Provision storage account and container for the icon upload
 
     response = provision_icon_storage(cmd, publisher_name, offer_name, sku)
-
+    print(response)
     if( response["status"] != "succeeded"):
         logger.error("Failed to provision storage for icon upload: %s", response.get("error", "Unknown error"))
         return {
@@ -783,6 +785,14 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
         cmd, publisher_name, offer_name, sku)
     sas_url = icon_url["sasUrl"]
 
+    # Use proper blob storage headers
+    headers = {
+        'x-ms-blob-type': 'BlockBlob',
+        'Content-Type': 'image/png',
+        # Remove any explicit x-ms-version header to use the service default
+        # DO NOT add 'x-ms-version': '2023-08-03' as it's not supported
+    }
+
     # Upload icons to the generated SAS URL
     for icon_file in icon_files:
         icon_path = os.path.join(icons_path, icon_file)
@@ -790,12 +800,17 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
             icon_data = f.read()
 
         # Upload the icon file to the SAS URL
-        upload_response = requests.put(sas_url, data=icon_data)
+        upload_response = requests.put(sas_url, headers=headers, data=icon_data)
 
         if upload_response.status_code == 201:
-            logger.info("Successfully uploaded %s to %s", icon_file, sas_url)
+            print("Successfully uploaded %s to %s", icon_file, sas_url)
+        if upload_response.status_code == 409:
+            print("Icons present already: %s", upload_response.text)
         else:
-            logger.error("Failed to upload %s: %s", icon_file, upload_response.status_code)
+            print("Failed to upload %s: %s", icon_file, upload_response.status_code)
+
+    print("Icons uploaded, uploading metadata...")
+    
     
 
 def provision_icon_storage(cmd,publisher_name, offer_name, sku):
@@ -824,11 +839,11 @@ def provision_icon_storage(cmd,publisher_name, offer_name, sku):
 
     # Construct URL for requesting the SAS token
     url = (
-        f"https://{management_endpoint}"
+        f"{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/providers/{disconnected_operations_provider_namespace}/edgemarketplaceoffers"
         f"/{publisher_name}:{offer_name}:{sku}"
-        f"?api-version={public_api_version}"
+        f"?api-version={disconnected_operations_api_version}"
     )
 
     # Request body
@@ -836,13 +851,14 @@ def provision_icon_storage(cmd,publisher_name, offer_name, sku):
     }
 
     try:
-        logger.info("Provisioning storage for icon upload")
+        print("Provisioning storage for icon upload")
         response = send_raw_request(
             cmd.cli_ctx, "put", url,
             resource=management_endpoint,
             body=json.dumps(body)
         )
-
+        print(response.status_code)
+        print(response.text)
         if response.status_code == 200:
             token_data = response.json()
             
@@ -854,16 +870,10 @@ def provision_icon_storage(cmd,publisher_name, offer_name, sku):
                     "status": "failed"
                 }
             
-            logger.info("Successfully generated SAS URL for icons")
+            print("Successfully generated SAS URL for icons")
             return {
                 "status": "succeeded",
-            }
-        
-        if response.status_code == 409:
-            logger.info("Storage already provisioned")
-            return {
-                "status": "succeeded",
-                "message": "Storage already provisioned"
+                "message": "Storage provisioned successfully"
             }
         
         error_message = f"Request failed with status code: {response.status_code}"
@@ -873,7 +883,13 @@ def provision_icon_storage(cmd,publisher_name, offer_name, sku):
             "status": "failed",
             "response": response.text,
         }
-
+    except HTTPError as e:
+        if("Conflict" in str(e)):
+            print("Storage already provisioned")
+            return {
+                "status": "succeeded",
+                "message": "Storage already provisioned"
+            }
     except requests.RequestException as e:
         logger.error("Failed to generate icon SAS token: %s", str(e))
         return {
@@ -909,12 +925,12 @@ def generate_icon_sas_token(cmd,publisher_name, offer_name, sku):
 
     # Construct URL for requesting the SAS token
     url = (
-        f"https://{management_endpoint}"
+        f"{management_endpoint}"
         f"/subscriptions/{subscription_id}"
         f"/providers/{disconnected_operations_provider_namespace}/edgemarketplaceoffers"
         f"/{publisher_name}:{offer_name}:{sku}"
         f"/postAccessToken"
-        f"?api-version={public_api_version}"
+        f"?api-version={disconnected_operations_api_version}"
     )
 
     # Request body
@@ -931,8 +947,8 @@ def generate_icon_sas_token(cmd,publisher_name, offer_name, sku):
 
         if response.status_code == 200:
             token_data = response.json()
-            sas_url = token_data.get("sasUrl")
-            
+            sas_url = token_data
+            print(sas_url)
             if not sas_url:
                 logger.error("SAS URL not found in response")
                 return {
