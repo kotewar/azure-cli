@@ -669,8 +669,8 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
     """Sideload the specified marketplace offer to disconnected operations instance."""
     import json
     import os
+    import subprocess
 
-    import requests
     from knack.log import get_logger
     
     logger = get_logger(__name__)
@@ -693,7 +693,7 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
     base_path = os.path.join(root_folder, "catalog_artifacts", publisher_name, offer_name)
     sku_path = os.path.join(base_path, sku)
     version_path = os.path.join(sku_path, version)
-    metadata_path = os.path.join(version_path, "metadata.json")
+    metadata_path = os.path.join(sku_path, "metadata.json")
     icons_path = os.path.join(sku_path, "icons")
     
     # Validate basic folder structure exists
@@ -785,33 +785,56 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
         cmd, publisher_name, offer_name, sku)
     sas_url = icon_url["sasUrl"]
 
-    # Use proper blob storage headers
-    headers = {
-        'x-ms-blob-type': 'BlockBlob',
-        'Content-Type': 'image/png',
-        # Remove any explicit x-ms-version header to use the service default
-        # DO NOT add 'x-ms-version': '2023-08-03' as it's not supported
-    }
-
     # Upload icons to the generated SAS URL
     for icon_file in icon_files:
         icon_path = os.path.join(icons_path, icon_file)
-        with open(icon_path, 'rb') as f:
-            icon_data = f.read()
-
-        # Upload the icon file to the SAS URL
-        upload_response = requests.put(sas_url, headers=headers, data=icon_data)
-
-        if upload_response.status_code == 201:
+        # Upload the icon file to the SAS URL using AzCopy
+        current_env = os.environ.copy()
+        current_env["AZCOPY_DEFAULT_SERVICE_API_VERSION"] = "2017-11-09"
+        azcopy_command = f'azcopy copy "{icon_path}" "{sas_url}"'
+        upload_process = subprocess.run(
+            azcopy_command, 
+            shell=True,
+            capture_output=True,
+            text=True
+        )
+        print(azcopy_command)
+        if upload_process.returncode == 0:
             print("Successfully uploaded %s to %s", icon_file, sas_url)
-        if upload_response.status_code == 409:
-            print("Icons present already: %s", upload_response.text)
+        elif "BlobAlreadyExists" in upload_process.stderr:
+            print("Icons present already: %s", upload_process.stderr)
         else:
-            print("Failed to upload %s: %s", icon_file, upload_response.status_code)
+            # return {
+            #     "error": f"Failed to upload {icon_file}: {upload_process.stderr}. Please refer logs in C:\\Users\\<username>\\.azcopy\\ folder",
+            #     "status": "failed"
+            # }
+            print(f"Failed to upload {icon_file}: {upload_process.stderr}. Please refer logs in C:\\Users\\<username>\\.azcopy\\ folder")
 
     print("Icons uploaded, uploading metadata...")
+
+    # Upload catalog content
+    print("Placeholder for uploading catalog content")
+
+    # Provision storage container for VHD upload
+    response = provision_sku_version_storage(cmd, publisher_name, offer_name, sku, version)
+    print(response)
+    if( response["status"] != "succeeded"):
+        logger.error("Failed to provision storage for icon upload: %s", response.get("error", "Unknown error"))
+        return {
+            "error": response.get("error", "Unknown error"),
+            "status": "failed"
+        }
     
+    logger.info("Storage provisioned successfully. Proceeding to upload VHD.")
+
+    vhd_sas_url = generate_sku_version_sas_token(
+        cmd, publisher_name, offer_name, sku)
+    sas_url = vhd_sas_url["sasUrl"]
+
+    print("SAS URL for VHD upload: %s", sas_url)
     
+    # Upload VHD
+    print("azcopy blahblah")
 
 def provision_icon_storage(cmd,publisher_name, offer_name, sku):
     """Generate SAS token URL for uploading icons to a marketplace offer.
@@ -972,6 +995,177 @@ def generate_icon_sas_token(cmd,publisher_name, offer_name, sku):
 
     except requests.RequestException as e:
         logger.error("Failed to generate icon SAS token: %s", str(e))
+        return {
+            "error": str(e),
+            "status": "failed"
+        }
+
+
+def provision_sku_version_storage(cmd,publisher_name, offer_name, sku, version):
+    """Provision storage for uploading VHD to a marketplace offer.
+    
+    Args:
+        cmd: The command object.
+        publisher_name: Publisher ID of the marketplace offer.
+        offer_name: Offer ID of the marketplace offer.
+        sku: SKU ID of the marketplace offer.
+        version: Version of the SKU.
+        
+    Returns:
+        Dictionary containing the SAS URL for icon upload or error details.
+    """
+    import json
+
+    import requests
+    from knack.log import get_logger
+
+    from azure.cli.core.commands.client_factory import get_subscription_id
+    from azure.cli.core.util import send_raw_request
+
+    logger = get_logger(__name__)
+    management_endpoint = _get_management_endpoint(cmd.cli_ctx)
+    subscription_id = get_subscription_id(cmd.cli_ctx)
+
+    # Construct URL for requesting the SAS token
+    url = (
+        f"{management_endpoint}"
+        f"/subscriptions/{subscription_id}"
+        f"/providers/{disconnected_operations_provider_namespace}/edgemarketplaceoffers"
+        f"/{publisher_name}:{offer_name}:{sku}"
+        f"/skuversions/{version}"
+        f"?api-version={disconnected_operations_api_version}"
+    )
+
+    # Request body
+    body ={
+        "properties": {
+            "Method":"InitializeBlob"
+        }
+    }
+
+    try:
+        print("Provisioning storage for sku version VHD upload")
+        response = send_raw_request(
+            cmd.cli_ctx, "put", url,
+            resource=management_endpoint,
+            body=json.dumps(body)
+        )
+        print(response.text)
+
+        print(response.status_code)
+        if response.status_code == 200:
+            token_data = response.json()
+            
+            provisioning_state = token_data.get("properties", {}).get("provisioningState")
+            if provisioning_state != "Succeeded":
+                logger.error("Provisioning state is not succeeded: %s", provisioning_state)
+                return {
+                    "error": f"Provisioning state is not succeeded: {provisioning_state}",
+                    "status": "failed"
+                }
+            
+            print("Successfully generated SAS URL for icons")
+            return {
+                "status": "succeeded",
+                "message": "Storage provisioned successfully"
+            }
+        
+        error_message = f"Request failed with status code: {response.status_code}"
+        logger.error(error_message)
+        return {
+            "error": error_message,
+            "status": "failed",
+            "response": response.text,
+        }
+    except HTTPError as e:
+        if("Conflict" in str(e)):
+            print("Storage already provisioned")
+            return {
+                "status": "succeeded",
+                "message": "Storage already provisioned"
+            }
+    except requests.RequestException as e:
+        logger.error("Failed to generate icon SAS token: %s", str(e))
+        return {
+            "error": str(e),
+            "status": "failed"
+        }
+
+def generate_sku_version_sas_token(cmd,publisher_name, offer_name, sku, version):
+    """Generate SAS token URL for uploading icons to a marketplace offer.
+    
+    Args:
+        cmd: The command object.
+        publisher_name: Publisher ID of the marketplace offer.
+        offer_name: Offer ID of the marketplace offer.
+        sku: SKU ID of the marketplace offer.
+        icon_name: Name of the icon file (e.g., "large", "medium", "small").
+        
+    Returns:
+        Dictionary containing the SAS URL for icon upload or error details.
+    """
+    import json
+
+    import requests
+    from knack.log import get_logger
+
+    from azure.cli.core.commands.client_factory import get_subscription_id
+    from azure.cli.core.util import send_raw_request
+
+    logger = get_logger(__name__)
+    management_endpoint = _get_management_endpoint(cmd.cli_ctx)
+    subscription_id = get_subscription_id(cmd.cli_ctx)
+
+    # Construct URL for requesting the SAS token
+    url = (
+        f"{management_endpoint}"
+        f"/subscriptions/{subscription_id}"
+        f"/providers/{disconnected_operations_provider_namespace}/edgemarketplaceoffers"
+        f"/{publisher_name}:{offer_name}:{sku}"
+        f"/skuversions/{version}"
+        f"/postAccessToken"
+        f"?api-version={disconnected_operations_api_version}"
+    )
+
+    # Request body
+    body = {
+    }
+
+    try:
+        logger.info("Generating SAS token for VHD upload")
+        response = send_raw_request(
+            cmd.cli_ctx, "post", url,
+            resource=management_endpoint,
+            body=json.dumps(body)
+        )
+
+        if response.status_code == 200:
+            token_data = response.json()
+            sas_url = token_data
+            print(sas_url)
+            if not sas_url:
+                logger.error("SAS URL not found in response")
+                return {
+                    "error": "SAS URL not found",
+                    "status": "failed"
+                }
+                
+            logger.info("Successfully generated SAS URL for VHD")
+            return {
+                "status": "succeeded",
+                "sasUrl": sas_url
+            }
+        
+        error_message = f"Request failed with status code: {response.status_code}"
+        logger.error(error_message)
+        return {
+            "error": error_message,
+            "status": "failed",
+            "response": response.text,
+        }
+
+    except requests.RequestException as e:
+        logger.error("Failed to generate VHD SAS token: %s", str(e))
         return {
             "error": str(e),
             "status": "failed"
