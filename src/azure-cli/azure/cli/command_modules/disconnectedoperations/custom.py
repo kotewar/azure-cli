@@ -828,7 +828,7 @@ def sideload_image(cmd, publisher_name, offer_name, sku, version, root_folder):
     logger.info("Storage provisioned successfully. Proceeding to upload VHD.")
 
     vhd_sas_url = generate_sku_version_sas_token(
-        cmd, publisher_name, offer_name, sku)
+        cmd, publisher_name, offer_name, sku, version)
     sas_url = vhd_sas_url["sasUrl"]
 
     print("SAS URL for VHD upload: %s", sas_url)
